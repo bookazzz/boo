@@ -3,7 +3,7 @@ import gzip,json,shutil
 from pathlib import Path
 import requests,duckdb,pandas as pd
 
-# Frozen v1 validation utility; this comment is only a workflow trigger.
+# Frozen v1 validation utility; source coverage audit only.
 OUT=Path('exact_quote_volume.csv')
 meta=requests.get('https://api.github.com/repos/terrylica/binance-futures-availability/releases/latest',timeout=60).json()
 asset=next(a for a in meta['assets'] if a['name']=='availability.duckdb.gz')
