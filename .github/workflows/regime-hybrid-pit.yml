@@ -5,6 +5,7 @@ on:
     branches: [master]
     paths:
       - 'regime_hybrid_v1_pit.py'
+      - 'pit_extended_acceptance.py'
       - '.github/workflows/regime-hybrid-pit.yml'
   workflow_dispatch:
 
@@ -14,83 +15,61 @@ jobs:
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install pandas numpy pyarrow huggingface_hub
-
       - name: Download survivorship-free D1 universe
         run: |
           mkdir -p dataset
           python - <<'PY'
           from huggingface_hub import snapshot_download
-          p=snapshot_download(
-              repo_id='rogerdehe/klines-binance',
-              repo_type='dataset',
-              allow_patterns=['futures/1d/*.parquet'],
-              local_dir='dataset',
-          )
-          print('downloaded to', p)
+          snapshot_download(repo_id='rogerdehe/klines-binance',repo_type='dataset',allow_patterns=['futures/1d/*.parquet'],local_dir='dataset')
           PY
           echo "D1 files: $(find dataset/futures/1d -type f -name '*.parquet' | wc -l)"
           du -sh dataset/futures/1d
-
       - name: Pass A - PIT selection on D1
         run: |
           python regime_hybrid_v1_pit.py --root dataset --out pit_pass_a --disable-pass-b | tee pass_a.log
-          cat pit_pass_a/summary.json
-
+      - name: Extended full-PIT acceptance
+        run: |
+          python pit_extended_acceptance.py | tee extended.log
       - name: Download selected short mark/funding files
         run: |
           python - <<'PY'
           import json
           from huggingface_hub import snapshot_download
-          s=json.load(open('pit_pass_a/summary.json'))
-          syms=s.get('selected_short_symbols',[])
-          pats=[]
-          for sym in syms:
+          s=json.load(open('pit_pass_a/summary.json')); pats=[]
+          for sym in s.get('selected_short_symbols',[]):
               base=sym[:-4]
-              pats += [f'futures/1h/{base}_USDT_USDT-mark.parquet',
-                       f'futures/8h/{base}_USDT_USDT-funding_rate.parquet']
-          print('selected shorts', syms)
-          print('patterns', pats)
-          if pats:
-              snapshot_download(repo_id='rogerdehe/klines-binance', repo_type='dataset', allow_patterns=pats, local_dir='dataset')
+              pats += [f'futures/1h/{base}_USDT_USDT-mark.parquet',f'futures/8h/{base}_USDT_USDT-funding_rate.parquet']
+          if pats: snapshot_download(repo_id='rogerdehe/klines-binance',repo_type='dataset',allow_patterns=pats,local_dir='dataset')
           PY
-          find dataset/futures -type f | sort | tail -100
-
       - name: Pass B - mark price and actual funding where available
         run: |
           python regime_hybrid_v1_pit.py --root dataset --out pit_pass_b | tee pass_b.log
-          cat pit_pass_b/summary.json
-
       - name: Acceptance comparison
         run: |
           python - <<'PY'
           import json
-          a=json.load(open('pit_pass_a/summary.json'))
-          b=json.load(open('pit_pass_b/summary.json'))
+          a=json.load(open('pit_pass_a/summary.json')); b=json.load(open('pit_pass_b/summary.json')); e=json.load(open('pit_extended/extended_acceptance.json'))
           keep=['final_nav','cagr','max_drawdown','max_drawdown_date','daily_sharpe','oos_return','funding_pnl','pit_rows','pit_symbols','liquidity_source','selected_short_symbols']
-          out={'pass_a':{k:a.get(k) for k in keep},'pass_b':{k:b.get(k) for k in keep}}
-          json.dump(out,open('pit_acceptance.json','w'),indent=2)
-          print(json.dumps(out,indent=2))
+          out={'pass_a':{k:a.get(k) for k in keep},'pass_b':{k:b.get(k) for k in keep},'extended':e}
+          json.dump(out,open('pit_acceptance.json','w'),indent=2); print(json.dumps(out,indent=2))
           PY
-
       - name: Upload results
         uses: actions/upload-artifact@v4
         with:
-          name: regime-hybrid-v1-pit-results
+          name: regime-hybrid-v1-pit-results-extended
           path: |
             pit_pass_a/
             pit_pass_b/
+            pit_extended/
             pit_acceptance.json
             pass_a.log
             pass_b.log
+            extended.log
           retention-days: 30
-
-# trigger commit
