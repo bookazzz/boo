@@ -1,16 +1,15 @@
-name: Regime Hybrid v1 PIT
+name: Regime Hybrid v1 Final Audit
 
 on:
   push:
     branches: [master]
     paths:
-      - 'regime_hybrid_v1_pit.py'
-      - 'pit_extended_acceptance.py'
+      - 'quote_audit.py'
       - '.github/workflows/regime-hybrid-pit.yml'
   workflow_dispatch:
 
 jobs:
-  pit:
+  audit:
     runs-on: ubuntu-latest
     timeout-minutes: 120
     steps:
@@ -21,55 +20,104 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install pandas numpy pyarrow huggingface_hub
-      - name: Download survivorship-free D1 universe
+          pip install pandas numpy pyarrow huggingface_hub requests duckdb
+
+      - name: Download Binance D1 PIT universe
         run: |
-          mkdir -p dataset
+          mkdir -p binance_dataset
           python - <<'PY'
           from huggingface_hub import snapshot_download
-          snapshot_download(repo_id='rogerdehe/klines-binance',repo_type='dataset',allow_patterns=['futures/1d/*.parquet'],local_dir='dataset')
+          snapshot_download(repo_id='rogerdehe/klines-binance',repo_type='dataset',allow_patterns=['futures/1d/*.parquet'],local_dir='binance_dataset')
           PY
-          echo "D1 files: $(find dataset/futures/1d -type f -name '*.parquet' | wc -l)"
-          du -sh dataset/futures/1d
-      - name: Pass A - PIT selection on D1
+          echo "Binance D1 files: $(find binance_dataset/futures/1d -name '*.parquet' | wc -l)"
+
+      - name: Build exact Binance quote-volume history
         run: |
-          python regime_hybrid_v1_pit.py --root dataset --out pit_pass_a --disable-pass-b | tee pass_a.log
-      - name: Extended full-PIT acceptance
+          python quote_audit.py
+
+      - name: Binance exact-liquidity PIT
         run: |
-          python pit_extended_acceptance.py | tee extended.log
-      - name: Download selected short mark/funding files
+          python regime_hybrid_v1_pit.py --root binance_dataset --out binance_exact --exact-liquidity-csv exact_quote_volume.csv --disable-pass-b | tee binance_exact.log
+          cat binance_exact/summary.json
+
+      - name: Binance exact-liquidity extended acceptance
+        run: |
+          cp pit_extended_acceptance.py pit_extended_exact.py
+          python - <<'PY'
+          p='pit_extended_exact.py'
+          s=open(p).read().replace("mats,r30,r90,vol,liq,src=rh.matrices(df,cfg,None)","mats,r30,r90,vol,liq,src=rh.matrices(df,cfg,'exact_quote_volume.csv')").replace("ROOT=Path('dataset')","ROOT=Path('binance_dataset')").replace("OUT=Path('pit_extended')","OUT=Path('binance_exact_extended')").replace("open('pit_pass_a/summary.json')","open('binance_exact/summary.json')")
+          open(p,'w').write(s)
+          PY
+          python pit_extended_exact.py | tee binance_exact_extended.log
+
+      - name: Download Bybit D1 PIT universe
+        run: |
+          mkdir -p bybit_dataset
+          python - <<'PY'
+          from huggingface_hub import snapshot_download
+          snapshot_download(repo_id='rogerdehe/klines-bybit',repo_type='dataset',allow_patterns=['futures/1d/*.parquet'],local_dir='bybit_dataset')
+          PY
+          echo "Bybit D1 files: $(find bybit_dataset/futures/1d -name '*.parquet' | wc -l)"
+          du -sh bybit_dataset/futures/1d
+
+      - name: Bybit Pass A frozen v1
+        run: |
+          python regime_hybrid_v1_pit.py --root bybit_dataset --out bybit_pass_a --disable-pass-b | tee bybit_a.log
+          cat bybit_pass_a/summary.json
+
+      - name: Bybit extended acceptance
+        run: |
+          cp pit_extended_acceptance.py bybit_extended.py
+          python - <<'PY'
+          p='bybit_extended.py'
+          s=open(p).read().replace("ROOT=Path('dataset')","ROOT=Path('bybit_dataset')").replace("OUT=Path('pit_extended')","OUT=Path('bybit_extended_out')").replace("open('pit_pass_a/summary.json')","open('bybit_pass_a/summary.json')")
+          open(p,'w').write(s)
+          PY
+          python bybit_extended.py | tee bybit_extended.log
+
+      - name: Download selected Bybit mark and funding files
         run: |
           python - <<'PY'
           import json
           from huggingface_hub import snapshot_download
-          s=json.load(open('pit_pass_a/summary.json')); pats=[]
+          s=json.load(open('bybit_pass_a/summary.json')); pats=[]
           for sym in s.get('selected_short_symbols',[]):
               base=sym[:-4]
               pats += [f'futures/1h/{base}_USDT_USDT-mark.parquet',f'futures/8h/{base}_USDT_USDT-funding_rate.parquet']
-          if pats: snapshot_download(repo_id='rogerdehe/klines-binance',repo_type='dataset',allow_patterns=pats,local_dir='dataset')
+          if pats: snapshot_download(repo_id='rogerdehe/klines-bybit',repo_type='dataset',allow_patterns=pats,local_dir='bybit_dataset')
           PY
-      - name: Pass B - mark price and actual funding where available
+          echo "Bybit marks: $(find bybit_dataset/futures/1h -name '*-mark.parquet' 2>/dev/null | wc -l)"
+          echo "Bybit funding: $(find bybit_dataset/futures/8h -name '*funding_rate.parquet' 2>/dev/null | wc -l)"
+
+      - name: Bybit Pass B mark and funding
         run: |
-          python regime_hybrid_v1_pit.py --root dataset --out pit_pass_b | tee pass_b.log
-      - name: Acceptance comparison
+          python regime_hybrid_v1_pit.py --root bybit_dataset --out bybit_pass_b | tee bybit_b.log
+          cat bybit_pass_b/summary.json
+
+      - name: Final audit summary
         run: |
           python - <<'PY'
           import json
-          a=json.load(open('pit_pass_a/summary.json')); b=json.load(open('pit_pass_b/summary.json')); e=json.load(open('pit_extended/extended_acceptance.json'))
-          keep=['final_nav','cagr','max_drawdown','max_drawdown_date','daily_sharpe','oos_return','funding_pnl','pit_rows','pit_symbols','liquidity_source','selected_short_symbols']
-          out={'pass_a':{k:a.get(k) for k in keep},'pass_b':{k:b.get(k) for k in keep},'extended':e}
-          json.dump(out,open('pit_acceptance.json','w'),indent=2); print(json.dumps(out,indent=2))
+          b=json.load(open('binance_exact/summary.json'))
+          be=json.load(open('binance_exact_extended/extended_acceptance.json'))
+          y=json.load(open('bybit_pass_b/summary.json'))
+          ye=json.load(open('bybit_extended_out/extended_acceptance.json'))
+          keep=['final_nav','cagr','max_drawdown','daily_sharpe','oos_return','funding_pnl','pit_symbols','liquidity_source','selected_short_symbols']
+          out={'binance_exact':{k:b.get(k) for k in keep},'binance_exact_extended':be,'bybit':{k:y.get(k) for k in keep},'bybit_extended':ye}
+          json.dump(out,open('final_audit.json','w'),indent=2); print(json.dumps(out,indent=2))
           PY
-      - name: Upload results
+
+      - name: Upload final audit
         uses: actions/upload-artifact@v4
         with:
-          name: regime-hybrid-v1-pit-results-extended
+          name: regime-hybrid-v1-final-audit
           path: |
-            pit_pass_a/
-            pit_pass_b/
-            pit_extended/
-            pit_acceptance.json
-            pass_a.log
-            pass_b.log
-            extended.log
+            final_audit.json
+            exact_quote_volume.meta.json
+            binance_exact/
+            binance_exact_extended/
+            bybit_pass_a/
+            bybit_pass_b/
+            bybit_extended_out/
+            *.log
           retention-days: 30
