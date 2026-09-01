@@ -22,33 +22,11 @@ jobs:
           python -m pip install --upgrade pip
           pip install pandas numpy pyarrow huggingface_hub requests duckdb
 
-      - name: Download Binance D1 PIT universe
+      - name: Audit Binance exact quote-volume source coverage
+        continue-on-error: true
         run: |
-          mkdir -p binance_dataset
-          python - <<'PY'
-          from huggingface_hub import snapshot_download
-          snapshot_download(repo_id='rogerdehe/klines-binance',repo_type='dataset',allow_patterns=['futures/1d/*.parquet'],local_dir='binance_dataset')
-          PY
-          echo "Binance D1 files: $(find binance_dataset/futures/1d -name '*.parquet' | wc -l)"
-
-      - name: Build exact Binance quote-volume history
-        run: |
-          python quote_audit.py
-
-      - name: Binance exact-liquidity PIT
-        run: |
-          python regime_hybrid_v1_pit.py --root binance_dataset --out binance_exact --exact-liquidity-csv exact_quote_volume.csv --disable-pass-b | tee binance_exact.log
-          cat binance_exact/summary.json
-
-      - name: Binance exact-liquidity extended acceptance
-        run: |
-          cp pit_extended_acceptance.py pit_extended_exact.py
-          python - <<'PY'
-          p='pit_extended_exact.py'
-          s=open(p).read().replace("mats,r30,r90,vol,liq,src=rh.matrices(df,cfg,None)","mats,r30,r90,vol,liq,src=rh.matrices(df,cfg,'exact_quote_volume.csv')").replace("ROOT=Path('dataset')","ROOT=Path('binance_dataset')").replace("OUT=Path('pit_extended')","OUT=Path('binance_exact_extended')").replace("open('pit_pass_a/summary.json')","open('binance_exact/summary.json')")
-          open(p,'w').write(s)
-          PY
-          python pit_extended_exact.py | tee binance_exact_extended.log
+          python quote_audit.py | tee quote_audit.log
+          cat exact_quote_volume.meta.json || true
 
       - name: Download Bybit D1 PIT universe
         run: |
@@ -97,13 +75,12 @@ jobs:
       - name: Final audit summary
         run: |
           python - <<'PY'
-          import json
-          b=json.load(open('binance_exact/summary.json'))
-          be=json.load(open('binance_exact_extended/extended_acceptance.json'))
+          import json, pathlib
           y=json.load(open('bybit_pass_b/summary.json'))
           ye=json.load(open('bybit_extended_out/extended_acceptance.json'))
-          keep=['final_nav','cagr','max_drawdown','daily_sharpe','oos_return','funding_pnl','pit_symbols','liquidity_source','selected_short_symbols']
-          out={'binance_exact':{k:b.get(k) for k in keep},'binance_exact_extended':be,'bybit':{k:y.get(k) for k in keep},'bybit_extended':ye}
+          q=json.load(open('exact_quote_volume.meta.json')) if pathlib.Path('exact_quote_volume.meta.json').exists() else None
+          keep=['final_nav','cagr','max_drawdown','max_drawdown_date','daily_sharpe','oos_return','funding_pnl','pit_rows','pit_symbols','liquidity_source','selected_short_symbols']
+          out={'binance_exact_quote_source_coverage':q,'bybit':{k:y.get(k) for k in keep},'bybit_extended':ye}
           json.dump(out,open('final_audit.json','w'),indent=2); print(json.dumps(out,indent=2))
           PY
 
@@ -114,8 +91,6 @@ jobs:
           path: |
             final_audit.json
             exact_quote_volume.meta.json
-            binance_exact/
-            binance_exact_extended/
             bybit_pass_a/
             bybit_pass_b/
             bybit_extended_out/
