@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# Trigger-only commit: preregistered strategy rules unchanged.
 from __future__ import annotations
 import json, math, re
 from dataclasses import dataclass
@@ -47,9 +48,8 @@ def matrices(df):
     prev=c.shift(1); tr=pd.DataFrame(np.maximum.reduce([(h-l).values,(h-prev).abs().values,(l-prev).abs().values]),index=c.index,columns=c.columns)
     atr=tr.rolling(14,min_periods=14).mean()
     prev20h=h.shift(1).rolling(20,min_periods=20).max(); prev20v=v.shift(1).rolling(20,min_periods=20).median()
-    # rolling 30-day average of per-candle volume*close; six 4h bars/day => mean daily turnover = sum trailing 180 / 30
     liq=(v*c).rolling(180,min_periods=120).sum()/30.0
-    history=c.notna().rolling(540,min_periods=1).sum() # 90 days = 540 bars
+    history=c.notna().rolling(540,min_periods=1).sum()
     return m,r7,r21,r30,rv7,rv21,atr,prev20h,prev20v,liq,history
 
 def maxdd(eq):
@@ -59,7 +59,6 @@ def run(root,out):
     df=load(root); m,r7,r21,r30,rv7,rv21,atr,p20h,p20v,liq,hist=matrices(df)
     idx=m['close'].index; syms=list(m['close'].columns)
     if 'BTCUSDT' not in syms: raise RuntimeError('BTC missing')
-    # Eligibility and dispersion computed for every timestamp, without using current observation in threshold.
     trend=(r7>0)&(r21>0)&(liq>=5_000_000)&(hist>=540)
     disp=r7.where(trend).std(axis=1,skipna=True)
     disp_thr=disp.shift(1).rolling(180,min_periods=60).quantile(.90)
@@ -68,7 +67,6 @@ def run(root,out):
     pending_exits=set(); pending_entries=[]
     for i,t in enumerate(idx):
         if t<start or t>end: continue
-        # Execute scheduled exits first at this bar open.
         for s in list(pending_exits):
             p=positions.get(s)
             if not p: continue
@@ -79,7 +77,6 @@ def run(root,out):
             trades.append({**p,'exit_time':t,'exit':xp,'exit_fee':fee,'pnl':pnl,'ret_on_notional':pnl/p['notional'],'reason':p.get('exit_reason','scheduled')})
             cooldown[s]=i+42; del positions[s]
         pending_exits.clear()
-        # Execute scheduled entries at open after exits.
         if pending_entries:
             for ent in pending_entries:
                 if len(positions)>=2: break
@@ -96,7 +93,6 @@ def run(root,out):
                 a=float(ent['atr'])
                 positions[s]={'symbol':s,'entry_time':t,'entry':ep,'qty':qty,'notional':notional,'entry_fee':fee,'stop':ep-2*a,'bars':0,'score':ent['score']}
             pending_entries=[]
-        # Intrabar stop handling. Conservative: if low breaches stop, fill at stop with adverse slippage.
         for s,p in list(positions.items()):
             lo=m['low'].at[t,s]
             if pd.notna(lo) and float(lo)<=p['stop']:
@@ -104,13 +100,11 @@ def run(root,out):
                 pnl=(xp-p['entry'])*p['qty']-p['entry_fee']-fee
                 trades.append({**p,'exit_time':t,'exit':xp,'exit_fee':fee,'pnl':pnl,'ret_on_notional':pnl/p['notional'],'reason':'stop'})
                 cooldown[s]=i+42; del positions[s]
-        # Mark equity at close.
         equity=cash
         for s,p in positions.items():
             px=m['close'].at[t,s]
             if pd.notna(px): equity+=p['qty']*float(px)
         eq.append((t,equity)); exposure.append((t,len(positions)))
-        # Close-signal decisions for next bar.
         btc7=r7.at[t,'BTCUSDT']; btc30=r30.at[t,'BTCUSDT']
         gate=pd.notna(btc7) and pd.notna(btc30) and btc7>0 and btc30>0
         for s,p in list(positions.items()):
@@ -135,7 +129,6 @@ def run(root,out):
             cand.sort(reverse=True)
             base_equity=equity
             for score,s,a in cand[:slots]: pending_entries.append({'symbol':s,'score':score,'atr':a,'target_notional':.5*base_equity})
-    # liquidate at final close conservatively
     t=end if end in idx else idx[idx<=end][-1]
     for s,p in list(positions.items()):
         raw=m['close'].at[t,s]
