@@ -1,0 +1,108 @@
+name: Regime Hybrid v2 Forward Shadow
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '7 0 * * *'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: regime-hybrid-v2-forward-shadow
+  cancel-in-progress: false
+
+jobs:
+  shadow:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      PYTHONUNBUFFERED: '1'
+      SHADOW_NAV_USDT: '100'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install
+        run: pip install requests
+
+      - name: Unit-test execution safety
+        run: python test_execution_engine.py
+
+      - name: Public Bybit testnet health
+        run: python bybit_execution_engine.py health --mode testnet --symbol BTCUSDT
+
+      - name: Resolve UTC day
+        id: day
+        shell: bash
+        run: |
+          echo "today=$(date -u +%F)" >> "$GITHUB_OUTPUT"
+          echo "dom=$(date -u +%d)" >> "$GITHUB_OUTPUT"
+
+      - name: Build forward signal
+        shell: bash
+        run: |
+          TODAY='${{ steps.day.outputs.today }}'
+          DOM='${{ steps.day.outputs.dom }}'
+          if [ "$TODAY" '<' '2026-10-01' ]; then
+            python crossvenue_live_signal.py --utc-day "$TODAY" --out signal.json
+          elif [ "$DOM" = '01' ]; then
+            python crossvenue_live_signal.py --utc-day "$TODAY" --full-universe --out signal.json
+          else
+            python crossvenue_live_signal.py --utc-day "$TODAY" --state forward_shadow/current_signal.json --out signal.json
+          fi
+
+      - name: Freeze monthly target state
+        shell: bash
+        run: |
+          TODAY='${{ steps.day.outputs.today }}'
+          DOM='${{ steps.day.outputs.dom }}'
+          if [ "$TODAY" '>=' '2026-10-01' ] && [ "$DOM" = '01' ]; then
+            mkdir -p forward_shadow
+            cp signal.json forward_shadow/current_signal.json
+          fi
+
+      - name: Prepare execution references
+        run: python prepare_shadow_orders.py --input signal.json --output signal.prepared.json
+
+      - name: Append forward ledger
+        run: python forward_shadow.py run --root forward_shadow --signal-json signal.prepared.json --utc-day '${{ steps.day.outputs.today }}'
+
+      - name: Show status
+        run: python forward_shadow.py status --root forward_shadow
+
+      - name: Commit append-only shadow state
+        shell: bash
+        run: |
+          git config user.name 'regime-hybrid-shadow-bot'
+          git config user.email 'shadow-bot@users.noreply.github.com'
+          git add forward_shadow/
+          if git diff --cached --quiet; then
+            echo 'No shadow changes to commit.'
+          else
+            git commit -m "forward shadow ${{ steps.day.outputs.today }}"
+            git push
+          fi
+
+      - name: Optional private testnet reconciliation
+        if: ${{ secrets.BYBIT_TESTNET_API_KEY != '' && secrets.BYBIT_TESTNET_API_SECRET != '' }}
+        env:
+          BYBIT_TESTNET_API_KEY: ${{ secrets.BYBIT_TESTNET_API_KEY }}
+          BYBIT_TESTNET_API_SECRET: ${{ secrets.BYBIT_TESTNET_API_SECRET }}
+        run: |
+          python bybit_execution_engine.py reconcile --mode testnet --symbol BTCUSDT --journal forward_shadow/testnet_execution_journal.jsonl
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: regime-hybrid-v2-forward-shadow-${{ steps.day.outputs.today }}
+          path: |
+            signal.json
+            signal.prepared.json
+            forward_shadow/
+          retention-days: 90
