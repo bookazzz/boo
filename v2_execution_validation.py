@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# workflow trigger; validation logic frozen for this run
 from __future__ import annotations
 import gzip, io, json, math, os, time
 from pathlib import Path
@@ -40,9 +41,7 @@ def funding_hf():
         if not rc: continue
         x['rate']=pd.to_numeric(x[rc[0]],errors='coerce')
         for idx,r in t[t.sym.eq(s)].iterrows():
-            # Strict interior removes ambiguous UTC-open entry/exit boundary funding.
             fx=x[(x.date>r.entry_date)&(x.date<r.exit_date)].dropna(subset=['rate'])
-            # Use linear interpolation between entry/exit trade prices for notional mark proxy; rate itself is actual dataset funding.
             if len(fx):
                 span=max((r.exit_date-r.entry_date).total_seconds(),1)
                 frac=(fx.date-r.entry_date).dt.total_seconds()/span
@@ -52,7 +51,6 @@ def funding_hf():
             total_cf+=float(cf); events+=len(fx)
             rows.append({'trade_index':int(idx),'sym':s,'entry':str(r.entry_date),'exit':str(r.exit_date),'events':int(len(fx)),'funding_cf_usdt':float(cf)})
     pd.DataFrame(rows).to_csv(OUT/'funding_hf_trade_detail.csv',index=False)
-    # Carry stresses are deliberately adverse annual costs applied to entry notional x holding days.
     stresses={}
     for annual in (.10,.20,.30,.50):
         cost=0.0
@@ -66,15 +64,12 @@ def parse_archive(sym,day):
     if r.status_code!=200:return None,{'url':url,'status':r.status_code,'bytes':len(r.content)}
     try: df=pd.read_csv(io.BytesIO(gzip.decompress(r.content)))
     except Exception as e:return None,{'url':url,'status':200,'error':repr(e),'bytes':len(r.content)}
-    # Historical futures archive commonly has timestamp, price, size. Normalize defensively.
     cols={c.lower():c for c in df.columns}
     pc=next((cols[k] for k in ('price','p') if k in cols),None); sc=next((cols[k] for k in ('size','qty','quantity','q') if k in cols),None); tc=next((cols[k] for k in ('timestamp','time','ts') if k in cols),None)
     if pc is None or sc is None:return None,{'url':url,'status':200,'columns':list(df.columns),'bytes':len(r.content)}
     df['price_n']=pd.to_numeric(df[pc],errors='coerce'); df['size_n']=pd.to_numeric(df[sc],errors='coerce')
     if tc:
-        tv=pd.to_numeric(df[tc],errors='coerce');
-        # Bybit archive timestamp is normally Unix seconds with decimals.
-        df['ts_n']=pd.to_datetime(tv,unit='s',utc=True,errors='coerce').dt.tz_convert(None)
+        tv=pd.to_numeric(df[tc],errors='coerce'); df['ts_n']=pd.to_datetime(tv,unit='s',utc=True,errors='coerce').dt.tz_convert(None)
     else: df['ts_n']=pd.NaT
     return df,{'url':url,'status':200,'rows':len(df),'columns':list(df.columns),'bytes':len(r.content)}
 
@@ -90,8 +85,7 @@ def execution90():
             turnover=float((df.price_n*df.size_n).sum()); row['exact_trade_turnover_usdt']=turnover; row['tranche_notional_usdt']=float(r.qty*r.entry); row['notional_share_of_daily_turnover']=row['tranche_notional_usdt']/turnover if turnover>0 else None
             raw=float(r.entry)/(1-0.0005) if r.side=='short' else float(r.entry)/(1+0.0005); row['implied_raw_open']=raw
             if df.ts_n.notna().any():
-                d0=r.entry_date.normalize(); first=df[df.ts_n>=d0].sort_values('ts_n').head(1)
-                m1=df[(df.ts_n>=d0)&(df.ts_n<d0+pd.Timedelta(minutes=1))]
+                d0=r.entry_date.normalize(); first=df[df.ts_n>=d0].sort_values('ts_n').head(1); m1=df[(df.ts_n>=d0)&(df.ts_n<d0+pd.Timedelta(minutes=1))]
                 if len(first): row['first_trade_price']=float(first.price_n.iloc[0]); row['first_trade_vs_raw_bps']=(row['first_trade_price']/raw-1)*1e4
                 if len(m1) and m1.size_n.sum()>0:
                     vwap=float((m1.price_n*m1.size_n).sum()/m1.size_n.sum()); row['first_minute_vwap']=vwap; row['first_minute_vwap_vs_raw_bps']=(vwap/raw-1)*1e4
@@ -106,9 +100,7 @@ def api_and_min_notional():
         r=requests.get('https://api.bybit.com/v5/market/instruments-info',params={'category':'linear','symbol':'BTCUSDT'},timeout=20)
         out['mainnet_public_api_attempt']={'status':r.status_code,'body_prefix':r.text[:200]}
     except Exception as e: out['mainnet_public_api_attempt']={'error':repr(e)}
-    # Official docs expose minNotionalValue per instrument; 5 USDT is the documented example/common floor. Compute capital feasibility mechanically.
-    floor=5.0
-    out['min_notional_sizing_scenario']={}
+    floor=5.0; out['min_notional_sizing_scenario']={}
     for w in (.10,.15,.20):
         tranche_per_100=100*w/3
         out['min_notional_sizing_scenario'][f'{int(w*100)}pct_slot']={'tranche_usdt_at_nav100':tranche_per_100,'passes_5usdt_floor':tranche_per_100>=floor,'minimum_nav_for_5usdt_tranche':floor*3/w}
@@ -118,7 +110,6 @@ def api_and_min_notional():
 def ops_faults():
     tests=[]
     def add(name,got,want): tests.append({'name':name,'pass':got==want,'got':got,'want':want})
-    # Minimal deterministic safety state-machine assertions for the shadow/live implementation contract.
     add('one_venue_signal_missing_blocks_entry', ('cash' if not (True and False) else 'enter'),'cash')
     add('stale_daily_bar_blocks_entry', ('cash' if 90000>300 else 'enter'),'cash')
     seen=set(); oid='RH2-20260701-XPL-S1'; a=('submit' if oid not in seen else 'skip'); seen.add(oid); b=('submit' if oid not in seen else 'skip'); add('duplicate_orderlinkid_is_idempotent',(a,b),('submit','skip'))
