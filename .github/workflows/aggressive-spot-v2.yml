@@ -1,0 +1,41 @@
+name: Aggressive Spot v2 Backtest
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [master]
+    paths:
+      - 'AGGRESSIVE_SPOT_V2_PREREG.md'
+      - 'aggressive_spot_v2_backtest.py'
+      - '.github/workflows/aggressive-spot-v2.yml'
+
+jobs:
+  backtest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install dependencies
+        run: pip install pandas numpy pyarrow huggingface_hub
+      - name: Download Binance spot 4H snapshot
+        run: |
+          python - <<'PY'
+          from huggingface_hub import snapshot_download
+          p=snapshot_download('rogerdehe/klines-binance',repo_type='dataset',allow_patterns=['spot/4h/*'])
+          print(p)
+          open('hf_root.txt','w').write(p)
+          PY
+      - name: Run frozen first v2 backtest
+        run: python aggressive_spot_v2_backtest.py --root "$(cat hf_root.txt)" --out aggressive_spot_v2_out
+      - name: Show summary
+        run: cat aggressive_spot_v2_out/summary.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: aggressive-spot-v2-first-backtest
+          path: |
+            AGGRESSIVE_SPOT_V2_PREREG.md
+            aggressive_spot_v2_out/
+          retention-days: 90
