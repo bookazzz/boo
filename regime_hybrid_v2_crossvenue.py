@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Regime Hybrid Cap2 v2 — Cross-Venue Consensus.
 Frozen before holdout: Binance+Bybit consensus signals; all v1 risk/execution rules unchanged.
-Workflow trigger only; strategy rules are unchanged.
+Workflow trigger only; strategy rules are unchanged. OKX holdout trigger only.
 """
 from __future__ import annotations
 import argparse,json
