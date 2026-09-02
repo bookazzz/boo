@@ -2,6 +2,15 @@ name: Regime Hybrid v2 Forward Shadow
 
 on:
   workflow_dispatch:
+  push:
+    branches: [master]
+    paths:
+      - '.github/workflows/regime-hybrid-v2-forward-shadow.yml'
+      - 'bybit_execution_engine.py'
+      - 'forward_shadow.py'
+      - 'crossvenue_live_signal.py'
+      - 'prepare_shadow_orders.py'
+      - 'test_execution_engine.py'
   schedule:
     - cron: '7 0 * * *'
 
@@ -35,6 +44,7 @@ jobs:
         run: python test_execution_engine.py
 
       - name: Public Bybit testnet health
+        continue-on-error: true
         run: python bybit_execution_engine.py health --mode testnet --symbol BTCUSDT
 
       - name: Resolve UTC day
@@ -76,6 +86,18 @@ jobs:
       - name: Show status
         run: python forward_shadow.py status --root forward_shadow
 
+      - name: Optional private testnet reconciliation
+        env:
+          BYBIT_TESTNET_API_KEY: ${{ secrets.BYBIT_TESTNET_API_KEY }}
+          BYBIT_TESTNET_API_SECRET: ${{ secrets.BYBIT_TESTNET_API_SECRET }}
+        shell: bash
+        run: |
+          if [ -z "$BYBIT_TESTNET_API_KEY" ] || [ -z "$BYBIT_TESTNET_API_SECRET" ]; then
+            echo 'No Bybit testnet secrets configured; private reconciliation skipped.'
+            exit 0
+          fi
+          python bybit_execution_engine.py reconcile --mode testnet --symbol BTCUSDT --journal forward_shadow/testnet_execution_journal.jsonl
+
       - name: Commit append-only shadow state
         shell: bash
         run: |
@@ -88,14 +110,6 @@ jobs:
             git commit -m "forward shadow ${{ steps.day.outputs.today }}"
             git push
           fi
-
-      - name: Optional private testnet reconciliation
-        if: ${{ secrets.BYBIT_TESTNET_API_KEY != '' && secrets.BYBIT_TESTNET_API_SECRET != '' }}
-        env:
-          BYBIT_TESTNET_API_KEY: ${{ secrets.BYBIT_TESTNET_API_KEY }}
-          BYBIT_TESTNET_API_SECRET: ${{ secrets.BYBIT_TESTNET_API_SECRET }}
-        run: |
-          python bybit_execution_engine.py reconcile --mode testnet --symbol BTCUSDT --journal forward_shadow/testnet_execution_journal.jsonl
 
       - uses: actions/upload-artifact@v4
         if: always()
