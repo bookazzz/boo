@@ -1,15 +1,15 @@
-name: Regime Hybrid v2 OKX Holdout
+name: Regime Hybrid v2 Execution Validation
 
 on:
   push:
     branches: [master]
     paths:
-      - 'regime_hybrid_v2_crossvenue.py'
+      - 'v2_execution_validation.py'
       - '.github/workflows/regime-hybrid-pit.yml'
   workflow_dispatch:
 
 jobs:
-  holdout:
+  validate:
     runs-on: ubuntu-latest
     timeout-minutes: 120
     steps:
@@ -20,49 +20,29 @@ jobs:
       - name: Install
         run: |
           python -m pip install --upgrade pip
-          pip install pandas numpy pyarrow huggingface_hub
-      - name: Download frozen signal venues and OKX holdout D1
+          pip install pandas numpy pyarrow huggingface_hub requests
+      - name: Download Binance and Bybit D1 PIT
         run: |
-          mkdir -p binance_dataset bybit_dataset okx_dataset
+          mkdir -p binance_dataset bybit_dataset
           python - <<'PY'
           from huggingface_hub import snapshot_download
           snapshot_download(repo_id='rogerdehe/klines-binance',repo_type='dataset',allow_patterns=['futures/1d/*.parquet'],local_dir='binance_dataset')
           snapshot_download(repo_id='rogerdehe/klines-bybit',repo_type='dataset',allow_patterns=['futures/1d/*.parquet'],local_dir='bybit_dataset')
-          snapshot_download(repo_id='rogerdehe/klines-okx',repo_type='dataset',allow_patterns=['futures/1d/*.parquet'],local_dir='okx_dataset')
           PY
-          echo "OKX D1 files: $(find okx_dataset/futures/1d -name '*.parquet' | wc -l)"
-      - name: Frozen v2 OKX execution holdout
+      - name: Reconstruct frozen v2 Bybit trades
         run: |
-          python regime_hybrid_v2_crossvenue.py --signal-a binance_dataset --signal-b bybit_dataset --exec-root okx_dataset --out v2_okx --disable-pass-b | tee v2_okx.log
-          cat v2_okx/summary.json
-      - name: Frozen v2 OKX random and universe controls
+          python regime_hybrid_v2_crossvenue.py --signal-a binance_dataset --signal-b bybit_dataset --exec-root bybit_dataset --out v2_bybit --disable-pass-b | tee v2_replay.log
+      - name: Run four execution validations
         run: |
-          python v2_extended_acceptance.py --signal-a binance_dataset --signal-b bybit_dataset --exec-root okx_dataset --pass-a v2_okx/summary.json --out v2_okx_ext | tee v2_okx_ext.log
-      - name: Holdout verdict payload
-        run: |
-          python - <<'PY'
-          import json
-          s=json.load(open('v2_okx/summary.json')); e=json.load(open('v2_okx_ext/extended_acceptance.json'))
-          gates={
-            'cagr_ge_8pct':s['cagr']>=.08,
-            'mdd_le_25pct':s['max_drawdown']>=-.25,
-            'mdd_le_30pct_warning_ceiling':s['max_drawdown']>=-.30,
-            'oos_positive':s['oos_return']>0,
-            'random_full_ge_75pct':e['random_control']['full_percentile']>=75,
-            'random_oos_ge_60pct':e['random_control']['oos_percentile']>=60,
-            'universe_full_ge_80pct':e['universe_80pct_perturbation']['profitable_full_fraction']>=.8,
-            'universe_oos_ge_80pct':e['universe_80pct_perturbation']['profitable_oos_fraction']>=.8,
-          }
-          out={'holdout':'OKX','rules_frozen_before_holdout':True,'summary':s,'extended':e,'gates':gates,'strict_pass':all([gates['cagr_ge_8pct'],gates['mdd_le_25pct'],gates['oos_positive'],gates['random_full_ge_75pct'],gates['random_oos_ge_60pct'],gates['universe_full_ge_80pct'],gates['universe_oos_ge_80pct']])}
-          json.dump(out,open('v2_okx_holdout.json','w'),indent=2); print(json.dumps(out,indent=2))
-          PY
+          python v2_execution_validation.py | tee v2_execution_validation.log
+          cat v2_execution_validation/validation_summary.json
       - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: regime-hybrid-v2-okx-holdout
+          name: regime-hybrid-v2-execution-validation
           path: |
-            v2_okx_holdout.json
-            v2_okx/
-            v2_okx_ext/
-            *.log
+            v2_execution_validation/
+            v2_bybit/summary.json
+            v2_execution_validation.log
+            v2_replay.log
           retention-days: 30
