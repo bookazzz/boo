@@ -1,15 +1,16 @@
-name: Regime Hybrid v1 Final Audit
+name: Regime Hybrid v2 Cross-Venue Acceptance
 
 on:
   push:
     branches: [master]
     paths:
-      - 'quote_audit.py'
+      - 'regime_hybrid_v2_crossvenue.py'
+      - 'v2_extended_acceptance.py'
       - '.github/workflows/regime-hybrid-pit.yml'
   workflow_dispatch:
 
 jobs:
-  audit:
+  v2:
     runs-on: ubuntu-latest
     timeout-minutes: 120
     steps:
@@ -17,82 +18,52 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      - name: Install dependencies
+      - name: Install
         run: |
           python -m pip install --upgrade pip
-          pip install pandas numpy pyarrow huggingface_hub requests duckdb
-
-      - name: Audit Binance exact quote-volume source coverage
-        continue-on-error: true
+          pip install pandas numpy pyarrow huggingface_hub
+      - name: Download Binance and Bybit D1 PIT
         run: |
-          python quote_audit.py | tee quote_audit.log
-          cat exact_quote_volume.meta.json || true
-
-      - name: Download Bybit D1 PIT universe
-        run: |
-          mkdir -p bybit_dataset
+          mkdir -p binance_dataset bybit_dataset
           python - <<'PY'
           from huggingface_hub import snapshot_download
+          snapshot_download(repo_id='rogerdehe/klines-binance',repo_type='dataset',allow_patterns=['futures/1d/*.parquet'],local_dir='binance_dataset')
           snapshot_download(repo_id='rogerdehe/klines-bybit',repo_type='dataset',allow_patterns=['futures/1d/*.parquet'],local_dir='bybit_dataset')
           PY
-          echo "Bybit D1 files: $(find bybit_dataset/futures/1d -name '*.parquet' | wc -l)"
-          du -sh bybit_dataset/futures/1d
-
-      - name: Bybit Pass A frozen v1
+      - name: V2 Binance execution
         run: |
-          python regime_hybrid_v1_pit.py --root bybit_dataset --out bybit_pass_a --disable-pass-b | tee bybit_a.log
-          cat bybit_pass_a/summary.json
-
-      - name: Bybit extended acceptance
+          python regime_hybrid_v2_crossvenue.py --signal-a binance_dataset --signal-b bybit_dataset --exec-root binance_dataset --out v2_binance --disable-pass-b | tee v2_binance.log
+      - name: V2 Binance robustness
         run: |
-          cp pit_extended_acceptance.py bybit_extended.py
-          python - <<'PY'
-          p='bybit_extended.py'
-          s=open(p).read().replace("ROOT=Path('dataset')","ROOT=Path('bybit_dataset')").replace("OUT=Path('pit_extended')","OUT=Path('bybit_extended_out')").replace("open('pit_pass_a/summary.json')","open('bybit_pass_a/summary.json')")
-          open(p,'w').write(s)
-          PY
-          python bybit_extended.py | tee bybit_extended.log
-
-      - name: Download selected Bybit mark and funding files
+          python v2_extended_acceptance.py --signal-a binance_dataset --signal-b bybit_dataset --exec-root binance_dataset --pass-a v2_binance/summary.json --out v2_binance_ext | tee v2_binance_ext.log
+      - name: V2 Bybit execution
+        run: |
+          python regime_hybrid_v2_crossvenue.py --signal-a binance_dataset --signal-b bybit_dataset --exec-root bybit_dataset --out v2_bybit --disable-pass-b | tee v2_bybit.log
+      - name: V2 Bybit robustness
+        run: |
+          python v2_extended_acceptance.py --signal-a binance_dataset --signal-b bybit_dataset --exec-root bybit_dataset --pass-a v2_bybit/summary.json --out v2_bybit_ext | tee v2_bybit_ext.log
+      - name: Final v2 comparison
         run: |
           python - <<'PY'
           import json
-          from huggingface_hub import snapshot_download
-          s=json.load(open('bybit_pass_a/summary.json')); pats=[]
-          for sym in s.get('selected_short_symbols',[]):
-              base=sym[:-4]
-              pats += [f'futures/1h/{base}_USDT_USDT-mark.parquet',f'futures/8h/{base}_USDT_USDT-funding_rate.parquet']
-          if pats: snapshot_download(repo_id='rogerdehe/klines-bybit',repo_type='dataset',allow_patterns=pats,local_dir='bybit_dataset')
+          out={
+            'rules':'frozen cross-venue consensus: BTC regime agreement; bull alt agreement + min(R90/Vol90); bear agreement + mean R30 least-oversold; v1 risk/execution unchanged',
+            'binance':json.load(open('v2_binance/summary.json')),
+            'binance_extended':json.load(open('v2_binance_ext/extended_acceptance.json')),
+            'bybit':json.load(open('v2_bybit/summary.json')),
+            'bybit_extended':json.load(open('v2_bybit_ext/extended_acceptance.json'))
+          }
+          json.dump(out,open('v2_acceptance.json','w'),indent=2); print(json.dumps(out,indent=2))
           PY
-          echo "Bybit marks: $(find bybit_dataset/futures/1h -name '*-mark.parquet' 2>/dev/null | wc -l)"
-          echo "Bybit funding: $(find bybit_dataset/futures/8h -name '*funding_rate.parquet' 2>/dev/null | wc -l)"
-
-      - name: Bybit Pass B mark and funding
-        run: |
-          python regime_hybrid_v1_pit.py --root bybit_dataset --out bybit_pass_b | tee bybit_b.log
-          cat bybit_pass_b/summary.json
-
-      - name: Final audit summary
-        run: |
-          python - <<'PY'
-          import json, pathlib
-          y=json.load(open('bybit_pass_b/summary.json'))
-          ye=json.load(open('bybit_extended_out/extended_acceptance.json'))
-          q=json.load(open('exact_quote_volume.meta.json')) if pathlib.Path('exact_quote_volume.meta.json').exists() else None
-          keep=['final_nav','cagr','max_drawdown','max_drawdown_date','daily_sharpe','oos_return','funding_pnl','pit_rows','pit_symbols','liquidity_source','selected_short_symbols']
-          out={'binance_exact_quote_source_coverage':q,'bybit':{k:y.get(k) for k in keep},'bybit_extended':ye}
-          json.dump(out,open('final_audit.json','w'),indent=2); print(json.dumps(out,indent=2))
-          PY
-
-      - name: Upload final audit
+      - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: regime-hybrid-v1-final-audit
+          name: regime-hybrid-v2-crossvenue-acceptance
           path: |
-            final_audit.json
-            exact_quote_volume.meta.json
-            bybit_pass_a/
-            bybit_pass_b/
-            bybit_extended_out/
+            v2_acceptance.json
+            v2_binance/
+            v2_binance_ext/
+            v2_bybit/
+            v2_bybit_ext/
             *.log
           retention-days: 30
