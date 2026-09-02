@@ -1,0 +1,36 @@
+name: Regime Hybrid v2 CI
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [master]
+    paths:
+      - 'bybit_execution_engine.py'
+      - 'forward_shadow.py'
+      - 'crossvenue_live_signal.py'
+      - 'prepare_shadow_orders.py'
+      - 'test_execution_engine.py'
+      - '.github/workflows/regime-hybrid-v2-ci.yml'
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install requests
+      - run: python test_execution_engine.py
+      - name: Verify live lock
+        shell: bash
+        run: |
+          set +e
+          python bybit_execution_engine.py health --mode live --symbol BTCUSDT >live_lock.log 2>&1
+          code=$?
+          set -e
+          if [ "$code" -eq 0 ]; then
+            echo 'ERROR: live mode unexpectedly unlocked'; cat live_lock.log; exit 1
+          fi
+          grep -q 'Live mode locked' live_lock.log
+          echo 'PASS live mode locked without explicit acknowledgement'
