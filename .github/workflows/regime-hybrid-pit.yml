@@ -1,29 +1,40 @@
-name: Bybit Funding Schema Audit
+name: Regime Hybrid v2 Funding Replay
 
 on:
   push:
     branches: [master]
     paths:
-      - 'inspect_bybit_funding.py'
+      - 'v2_funding_replay.py'
       - '.github/workflows/regime-hybrid-pit.yml'
   workflow_dispatch:
 
 jobs:
-  audit:
+  funding:
     runs-on: ubuntu-latest
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
       - name: Install
-        run: pip install pandas pyarrow huggingface_hub
-      - name: Inspect funding parquet
-        run: python inspect_bybit_funding.py | tee funding_schema_audit.log
+        run: pip install pandas numpy pyarrow huggingface_hub
+      - name: Download D1 signal venues
+        run: |
+          mkdir -p binance_dataset bybit_dataset
+          python - <<'PY'
+          from huggingface_hub import snapshot_download
+          snapshot_download(repo_id='rogerdehe/klines-binance',repo_type='dataset',allow_patterns=['futures/1d/*.parquet'],local_dir='binance_dataset')
+          snapshot_download(repo_id='rogerdehe/klines-bybit',repo_type='dataset',allow_patterns=['futures/1d/*.parquet'],local_dir='bybit_dataset')
+          PY
+      - name: Reconstruct frozen Bybit v2 trades
+        run: python regime_hybrid_v2_crossvenue.py --signal-a binance_dataset --signal-b bybit_dataset --exec-root bybit_dataset --out v2_bybit --disable-pass-b
+      - name: Replay actual funding
+        run: python v2_funding_replay.py | tee v2_funding_replay.log
       - uses: actions/upload-artifact@v4
         with:
-          name: bybit-funding-schema-audit
+          name: regime-hybrid-v2-funding-replay
           path: |
-            funding_schema_audit.json
-            funding_schema_audit.log
+            v2_funding_replay/
+            v2_funding_replay.log
           retention-days: 30
