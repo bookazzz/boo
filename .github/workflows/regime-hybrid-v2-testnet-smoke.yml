@@ -1,0 +1,54 @@
+name: Regime Hybrid v2 Testnet Smoke
+
+on:
+  workflow_dispatch:
+    inputs:
+      symbol:
+        description: 'Linear symbol'
+        required: true
+        default: 'BTCUSDT'
+      side:
+        description: 'Buy or Sell'
+        required: true
+        default: 'Buy'
+      notional:
+        description: 'Testnet quote notional USDT'
+        required: true
+        default: '10'
+
+concurrency:
+  group: regime-hybrid-v2-testnet-smoke
+  cancel-in-progress: false
+
+jobs:
+  smoke:
+    runs-on: [self-hosted, linux, x64]
+    env:
+      BYBIT_TESTNET_API_KEY: ${{ secrets.BYBIT_TESTNET_API_KEY }}
+      BYBIT_TESTNET_API_SECRET: ${{ secrets.BYBIT_TESTNET_API_SECRET }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install requests
+      - name: Require testnet credentials
+        shell: bash
+        run: |
+          test -n "$BYBIT_TESTNET_API_KEY"
+          test -n "$BYBIT_TESTNET_API_SECRET"
+      - run: python test_execution_engine.py
+      - name: Public testnet health
+        run: python bybit_execution_engine.py health --mode testnet --symbol '${{ inputs.symbol }}'
+      - name: Pre-order reconcile
+        run: python bybit_execution_engine.py reconcile --mode testnet --symbol '${{ inputs.symbol }}' --journal testnet_smoke_journal.jsonl
+      - name: Protected IOC testnet order
+        run: python bybit_execution_engine.py order --mode testnet --symbol '${{ inputs.symbol }}' --side '${{ inputs.side }}' --notional '${{ inputs.notional }}' --journal testnet_smoke_journal.jsonl
+      - name: Post-order reconcile
+        run: python bybit_execution_engine.py reconcile --mode testnet --symbol '${{ inputs.symbol }}' --journal testnet_smoke_journal.jsonl
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: regime-hybrid-v2-testnet-smoke
+          path: testnet_smoke_journal.jsonl
+          retention-days: 30
