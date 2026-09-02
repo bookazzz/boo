@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# Trigger-only commit: preregistered v2 strategy rules unchanged.
 from __future__ import annotations
 import json, math, re
 from pathlib import Path
@@ -46,7 +47,6 @@ def run(root,out):
     liq=(v*c).rolling(180,min_periods=120).sum()/30.0
     hist=c.notna().rolling(540,min_periods=1).sum()
     start=pd.Timestamp('2021-01-01'); end=min(pd.Timestamp('2025-05-31 20:00'),idx.max())
-    # weekly signal times Sunday 20:00 UTC
     sig_times=[t for t in idx if t>=start and t<=end and t.weekday()==6 and t.hour==20]
     weekly_disp=[]; plans={}
     for t in sig_times:
@@ -78,14 +78,12 @@ def run(root,out):
     sigset=set(sig_times)
     for t in idx:
         if t<start or t>end: continue
-        # Monday open: apply yesterday's signal plan if available.
         if t.weekday()==0 and t.hour==0:
             prev=t-pd.Timedelta(hours=4); plan=plans.get(prev)
-            # close all existing weekly positions conservatively, even retained names
             for s,p in list(positions.items()):
                 raw=o.at[t,s]
                 if pd.isna(raw): continue
-                xp=float(raw)*.9995; gross=p['qty']*xp; fee=gross*.001; cash+=gross-fee; fees+=fee
+                xp=float(raw)*0.9995; gross=p['qty']*xp; fee=gross*.001; cash+=gross-fee; fees+=fee
                 legs.append({'time':t,'symbol':s,'side':'sell','price':xp,'notional':gross,'fee':fee,'week_signal':prev,'reason':'weekly_rebalance'})
                 del positions[s]
             current_week_selected=[]; current_week_active=False; risk_off=False
@@ -102,20 +100,17 @@ def run(root,out):
                     legs.append({'time':t,'symbol':s,'side':'buy','price':ep,'notional':notion,'fee':fee,'week_signal':prev,'reason':'weekly_entry'})
                     current_week_selected.append(s)
                 current_week_active=bool(positions)
-        # mark equity
         equity=cash
         for s,p in positions.items():
             px=c.at[t,s]
             if pd.notna(px): equity+=p['qty']*float(px)
         eq.append((t,equity,len(positions)))
-        # intrawweek BTC risk exit after close, execute next bar open
         if positions:
             b14=r14.at[t,'BTCUSDT']; b30=r30.at[t,'BTCUSDT']
             gate=bool(pd.notna(b14) and pd.notna(b30) and b14>0 and b30>0)
             if not gate and not risk_off:
                 risk_off=True
         if risk_off and positions:
-            # schedule via immediate next iteration using a marker; emulate with direct next open if available
             j=idx.get_loc(t)
             if j+1<len(idx):
                 nt=idx[j+1]
@@ -123,11 +118,10 @@ def run(root,out):
                     for s,p in list(positions.items()):
                         raw=o.at[nt,s]
                         if pd.isna(raw): continue
-                        xp=float(raw)*.9995; gross=p['qty']*xp; fee=gross*.001; cash+=gross-fee; fees+=fee
+                        xp=float(raw)*0.9995; gross=p['qty']*xp; fee=gross*.001; cash+=gross-fee; fees+=fee
                         legs.append({'time':nt,'symbol':s,'side':'sell','price':xp,'notional':gross,'fee':fee,'week_signal':None,'reason':'btc_risk_exit'})
                         del positions[s]
                     risk_off=False
-    # final liquidation
     t=end
     for s,p in list(positions.items()):
         raw=c.at[t,s]
@@ -136,7 +130,6 @@ def run(root,out):
         legs.append({'time':t,'symbol':s,'side':'sell','price':xp,'notional':gross,'fee':fee,'week_signal':None,'reason':'end'})
         del positions[s]
     e=pd.DataFrame(eq,columns=['date','equity','npos']).drop_duplicates('date',keep='last').set_index('date')
-    # overwrite final equity to cash
     if len(e): e.loc[e.index[-1],'equity']=cash; e.loc[e.index[-1],'npos']=0
     weekly=e.equity.resample('W-SUN').last().pct_change().dropna()
     active=(e.npos.resample('W-SUN').max().reindex(weekly.index).fillna(0)>0)
