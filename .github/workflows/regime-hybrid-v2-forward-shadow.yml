@@ -2,15 +2,6 @@ name: Regime Hybrid v2 Forward Shadow
 
 on:
   workflow_dispatch:
-  push:
-    branches: [master]
-    paths:
-      - '.github/workflows/regime-hybrid-v2-forward-shadow.yml'
-      - 'bybit_execution_engine.py'
-      - 'forward_shadow.py'
-      - 'crossvenue_live_signal.py'
-      - 'prepare_shadow_orders.py'
-      - 'test_execution_engine.py'
   schedule:
     - cron: '7 0 * * *'
 
@@ -23,11 +14,12 @@ concurrency:
 
 jobs:
   shadow:
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64]
     timeout-minutes: 120
     env:
       PYTHONUNBUFFERED: '1'
       SHADOW_NAV_USDT: '100'
+      SHADOW_ROOT: 'forward_shadow_live'
     steps:
       - uses: actions/checkout@v4
         with:
@@ -43,9 +35,15 @@ jobs:
       - name: Unit-test execution safety
         run: python test_execution_engine.py
 
-      - name: Public Bybit testnet health
-        continue-on-error: true
-        run: python bybit_execution_engine.py health --mode testnet --symbol BTCUSDT
+      - name: Exchange public health
+        shell: bash
+        run: |
+          python bybit_execution_engine.py health --mode dry-run --symbol BTCUSDT
+          python - <<'PY'
+          import requests
+          r=requests.get('https://fapi.binance.com/fapi/v1/time',timeout=15)
+          r.raise_for_status(); print(r.json())
+          PY
 
       - name: Resolve UTC day
         id: day
@@ -59,12 +57,13 @@ jobs:
         run: |
           TODAY='${{ steps.day.outputs.today }}'
           DOM='${{ steps.day.outputs.dom }}'
-          if [ "$TODAY" '<' '2026-10-01' ]; then
+          ROOT="$SHADOW_ROOT"
+          if [[ "$TODAY" < '2026-10-01' ]]; then
             python crossvenue_live_signal.py --utc-day "$TODAY" --out signal.json
           elif [ "$DOM" = '01' ]; then
             python crossvenue_live_signal.py --utc-day "$TODAY" --full-universe --out signal.json
           else
-            python crossvenue_live_signal.py --utc-day "$TODAY" --state forward_shadow/current_signal.json --out signal.json
+            python crossvenue_live_signal.py --utc-day "$TODAY" --state "$ROOT/current_signal.json" --out signal.json
           fi
 
       - name: Freeze monthly target state
@@ -72,19 +71,20 @@ jobs:
         run: |
           TODAY='${{ steps.day.outputs.today }}'
           DOM='${{ steps.day.outputs.dom }}'
-          if [ "$TODAY" '>=' '2026-10-01' ] && [ "$DOM" = '01' ]; then
-            mkdir -p forward_shadow
-            cp signal.json forward_shadow/current_signal.json
+          ROOT="$SHADOW_ROOT"
+          if [[ "$TODAY" > '2026-09-30' ]] && [ "$DOM" = '01' ]; then
+            mkdir -p "$ROOT"
+            cp signal.json "$ROOT/current_signal.json"
           fi
 
       - name: Prepare execution references
         run: python prepare_shadow_orders.py --input signal.json --output signal.prepared.json
 
       - name: Append forward ledger
-        run: python forward_shadow.py run --root forward_shadow --signal-json signal.prepared.json --utc-day '${{ steps.day.outputs.today }}'
+        run: python forward_shadow.py run --root "$SHADOW_ROOT" --signal-json signal.prepared.json --utc-day '${{ steps.day.outputs.today }}'
 
       - name: Show status
-        run: python forward_shadow.py status --root forward_shadow
+        run: python forward_shadow.py status --root "$SHADOW_ROOT"
 
       - name: Optional private testnet reconciliation
         env:
@@ -96,14 +96,14 @@ jobs:
             echo 'No Bybit testnet secrets configured; private reconciliation skipped.'
             exit 0
           fi
-          python bybit_execution_engine.py reconcile --mode testnet --symbol BTCUSDT --journal forward_shadow/testnet_execution_journal.jsonl
+          python bybit_execution_engine.py reconcile --mode testnet --symbol BTCUSDT --journal "$SHADOW_ROOT/testnet_execution_journal.jsonl"
 
       - name: Commit append-only shadow state
         shell: bash
         run: |
           git config user.name 'regime-hybrid-shadow-bot'
           git config user.email 'shadow-bot@users.noreply.github.com'
-          git add forward_shadow/
+          git add "$SHADOW_ROOT/"
           if git diff --cached --quiet; then
             echo 'No shadow changes to commit.'
           else
@@ -118,5 +118,5 @@ jobs:
           path: |
             signal.json
             signal.prepared.json
-            forward_shadow/
+            forward_shadow_live/
           retention-days: 90
