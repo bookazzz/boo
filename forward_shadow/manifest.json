@@ -1,0 +1,27 @@
+{
+  "experiment_id": "RH2-FWD-20260902",
+  "strategy": "Regime Hybrid Cap2 v2 Cross-Venue Consensus",
+  "created_utc": "2026-09-02T09:45:45.372029+00:00",
+  "policy": {
+    "forward_start_utc": "2026-09-02",
+    "first_clean_rebalance_utc": "2026-10-01",
+    "min_complete_months": 3,
+    "min_calendar_days": 90,
+    "weight_per_slot": "0.20",
+    "cap": 2,
+    "entry_tranches": 3,
+    "max_adverse_drift_bps": "10",
+    "max_total_slippage_bps": "15",
+    "long_guard": "0.12",
+    "short_guard": "0.25",
+    "veto_closes": 3
+  },
+  "strategy_fingerprint": {
+    "regime_hybrid_v2_crossvenue.py": "94e1745ab33299e27c1fcfe680fdd1140696e36e1f1c27ed7ca1902d15148e9d",
+    "regime_hybrid_v1_pit.py": "8ef64aed8693ff5a87ff2b524f0461c70c73226756058466f646f0a6ead5a5e3",
+    "bybit_execution_engine.py": "2dd856a499270a58e2a2b8c1b5954b9c42ce36acf92433666715cf0973817384",
+    "forward_shadow.py": "f2b9f26795bef412688b2fd3f367c82371bc3deda31f8ee203d6d48f6db686a0"
+  },
+  "status": "RUNNING",
+  "note": "No pre-start decisions may be appended. September 2026 is observation-only because start occurred after Sep monthly entry window."
+}
